@@ -16,6 +16,10 @@ class Config:
     YT_DLP_PLAYLIST: bool = os.getenv("YT_DLP_PLAYLIST", "false").lower() == "true"
     YT_DLP_OUTPUT_TEMPLATE: str = os.getenv("YT_DLP_OUTPUT_TEMPLATE", "%(title)s.%(ext)s")
     
+    # Enhanced naming Configuration
+    ENHANCED_NAMING: bool = os.getenv("ENHANCED_NAMING", "true").lower() == "true"
+    PLAYLIST_FOLDER: bool = os.getenv("PLAYLIST_FOLDER", "true").lower() == "true"
+    
     # Bot Configuration
     BOT_START_MESSAGE: str = os.getenv("BOT_START_MESSAGE", "Welcome to YouTube Downloader Bot!\n\nSend me a YouTube link and I'll download it for you.")
     BOT_ERROR_MESSAGE: str = os.getenv("BOT_ERROR_MESSAGE", "An error occurred while processing your request.")

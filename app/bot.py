@@ -8,9 +8,9 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-import yt_dlp
+
 from config import Config
-from utils import get_yt_dlp_options, is_valid_youtube_url, sanitize_filename
+from utils import is_valid_youtube_url, download_video
 
 # Setup logging
 logging.basicConfig(
@@ -34,58 +34,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Send processing message
             processing_msg = await update.message.reply_text(Config.BOT_PROCESSING_MESSAGE)
 
-            # Configure yt-dlp options
-            ydl_opts = get_yt_dlp_options()
-            
-            logger.info(f"Downloading with options: {ydl_opts}")
+            logger.info(f"Starting download for: {message_text}")
 
-            # Download the video
-            download_success = False
-            file_path = None
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(message_text, download=True)
-                
-                # Get the actual file path
-                if info and 'entries' in info:
-                    # Playlist case - get first entry
-                    first_entry = info['entries'][0]
-                    file_path = os.path.join(
-                        Config.DOWNLOAD_DIR,
-                        sanitize_filename(first_entry.get('title', 'video')) + '.mp4'
-                    )
-                else:
-                    # Single video case
-                    file_path = os.path.join(
-                        Config.DOWNLOAD_DIR,
-                        sanitize_filename(info.get('title', 'video')) + '.mp4'
-                    )
-
-            # # Send the downloaded file
-            # if file_path and os.path.exists(file_path):
-            #     file_size = os.path.getsize(file_path)
-                
-            #     # Check file size limit
-            #     if Config.MAX_FILE_SIZE > 0 and file_size > Config.MAX_FILE_SIZE:
-            #         await update.message.reply_text(
-            #             f"File size ({file_size} bytes) exceeds maximum limit ({Config.MAX_FILE_SIZE} bytes)"
-            #         )
-            #     else:
-            #         # Send the video file
-            #         with open(file_path, 'rb') as video:
-            #             await context.bot.send_video(
-            #                 chat_id=chat_id, 
-            #                 video=video, 
-            #                 supports_streaming=True
-            #             )
-                    
-            #         # Delete the file after sending (optional)
-            #         os.remove(file_path)
-            #         logger.info(f"Successfully sent and deleted file: {file_path}")
-                    
-            #     download_success = True
-            # else:
-            #     await update.message.reply_text("Download failed. Please try again.")
+            # Download the video/playlist
+            # Note: This is a blocking call. For production use with many users, 
+            # consider running in a separate thread/executor.
+            download_video(message_text)
 
             # Delete the processing message
             try:
