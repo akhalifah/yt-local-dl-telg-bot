@@ -7,16 +7,21 @@ import yt_dlp
 
 logger = logging.getLogger(__name__)
 
-def get_yt_dlp_options() -> Dict[str, Any]:
+def get_yt_dlp_options(progress_hook=None) -> Dict[str, Any]:
     """Generate yt-dlp options based on configuration"""
     
     # Basic options
     ydl_opts = {
         'format': Config.YT_DLP_FORMAT,
-        'outtmpl': os.path.join(Config.DOWNLOAD_DIR, Config.YT_DLP_OUTPUT_TEMPLATE),
+        'outtmpl': Config.YT_DLP_OUTPUT_TEMPLATE,
+        'paths': {
+            'home': Config.DOWNLOAD_DIR,
+            'temp': Config.TEMP_DOWNLOAD_DIR
+        },
         'noplaylist': not Config.YT_DLP_PLAYLIST,
-        'progress_hooks': [],
+        'progress_hooks': [progress_hook] if progress_hook else [],
         'max_filesize': Config.MAX_FILE_SIZE if Config.MAX_FILE_SIZE > 0 else None,
+        'concurrent_fragment_downloads': Config.CONCURRENT_FRAGMENT_DOWNLOADS,
     }
     
     # Audio-only option
@@ -68,20 +73,66 @@ def sanitize_filename(filename: str, is_playlist=False) -> str:
     
     return sanitized
 
-def download_video(url: str) -> None:
+def get_video_info(url: str) -> Optional[Dict[str, Any]]:
+    """
+    Get video or playlist information without downloading.
+    
+    Args:
+        url: YouTube URL
+    
+    Returns:
+        Dictionary with video/playlist info or None if failed
+    """
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,  # Don't download, just get metadata
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if info:
+                # Check if it's a playlist
+                is_playlist = 'entries' in info
+                
+                if is_playlist:
+                    return {
+                        'type': 'playlist',
+                        'title': info.get('title', 'Unknown Playlist'),
+                        'video_count': len(info.get('entries', [])),
+                        'uploader': info.get('uploader', 'Unknown'),
+                    }
+                else:
+                    return {
+                        'type': 'video',
+                        'title': info.get('title', 'Unknown Video'),
+                        'duration': info.get('duration', 0),
+                        'uploader': info.get('uploader', 'Unknown'),
+                    }
+    except Exception as e:
+        logger.error(f"Error getting video info for {url}: {e}")
+        return None
+
+
+def download_video(url: str, progress_hook=None) -> None:
     """
     Download video or playlist from the given URL.
     Uses yt-dlp's native playlist handling via output template.
+    
+    Args:
+        url: YouTube URL to download
+        progress_hook: Optional callback function for progress updates
     """
     try:
-        download_opts = get_yt_dlp_options()
+        download_opts = get_yt_dlp_options(progress_hook=progress_hook)
         
         # Override output template to handle playlists automatically
         if Config.PLAYLIST_FOLDER:
             # Use yt-dlp's built-in playlist_title field with fallback to current dir
             # This automatically creates playlist directories when needed
             template = os.path.join(
-                Config.DOWNLOAD_DIR,
                 "%(playlist_title|.)s",  # Use playlist title or "." for single videos
                 Config.YT_DLP_OUTPUT_TEMPLATE
             )
