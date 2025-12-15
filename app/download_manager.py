@@ -9,6 +9,11 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+class CancelledError(Exception):
+    """Raised when a download task is cancelled."""
+    pass
+
+
 @dataclass
 class DownloadTask:
     """Represents a download task in the queue"""
@@ -18,6 +23,8 @@ class DownloadTask:
     task_type: str  # 'youtube' or 'telegram'
     queued_at: datetime
     task_id: int
+    future: asyncio.Future = None
+    cancelled: bool = False
 
 
 class DownloadManager:
@@ -58,8 +65,26 @@ class DownloadManager:
             'waiting': waiting_count,
             'total': self.queue_counter
         }
+
+    def get_task(self, task_id: int) -> Optional[DownloadTask]:
+        """Get a task by ID."""
+        return self.active_downloads.get(task_id)
+
+    def cancel_task(self, task_id: int) -> bool:
+        """
+        Mark a task as cancelled.
+        
+        Returns:
+            bool: True if task was found and marked, False otherwise
+        """
+        task = self.get_task(task_id)
+        if task:
+            task.cancelled = True
+            logger.info(f"Task {task_id} marked as cancelled")
+            return True
+        return False
     
-    async def download(
+    async def submit_download(
         self,
         download_func: Callable,
         task_type: str,
@@ -67,7 +92,7 @@ class DownloadManager:
         user_id: int,
         chat_id: int,
         progress_callback: Optional[Callable] = None
-    ) -> None:
+    ) -> tuple[int, asyncio.Future]:
         """
         Queue and execute a download with concurrency control.
         
@@ -90,7 +115,8 @@ class DownloadManager:
             chat_id=chat_id,
             task_type=task_type,
             queued_at=datetime.now(),
-            task_id=task_id
+            task_id=task_id,
+            future=asyncio.get_event_loop().create_future()
         )
         
         logger.info(
@@ -98,30 +124,45 @@ class DownloadManager:
             f"user={user_id}, queue_position={self.queue_counter}"
         )
         
-        try:
-            # Acquire semaphore (wait if at limit)
-            async with self.semaphore:
-                # Add to active downloads
-                self.active_downloads[task_id] = task
-                logger.info(
-                    f"Download started: task_id={task_id}, "
-                    f"active={len(self.active_downloads)}/{self.max_concurrent}"
-                )
-                
-                # Run blocking download function in thread pool
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(self.executor, download_func)
-                
-                logger.info(f"Download completed: task_id={task_id}")
-                
-        except Exception as e:
-            logger.error(f"Download failed: task_id={task_id}, error={e}")
-            raise
-        finally:
-            # Remove from active downloads
-            if task_id in self.active_downloads:
-                del self.active_downloads[task_id]
-            self.queue_counter = max(0, self.queue_counter - 1)
+        async def _execute_download():
+            try:
+                # Acquire semaphore (wait if at limit)
+                async with self.semaphore:
+                    # check for cancellation before starting
+                    if task.cancelled:
+                         logger.info(f"Task {task_id} cancelled before start")
+                         raise CancelledError("Task cancelled before start")
+                    
+                    # Add to active downloads
+                    self.active_downloads[task_id] = task
+                    logger.info(
+                        f"Download started: task_id={task_id}, "
+                        f"active={len(self.active_downloads)}/{self.max_concurrent}"
+                    )
+                    
+                    # Run blocking download function in thread pool
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(self.executor, download_func)
+                    
+                    logger.info(f"Download completed: task_id={task_id}")
+                    if not task.future.done():
+                        task.future.set_result(True)
+                    
+            except Exception as e:
+                logger.error(f"Download failed: task_id={task_id}, error={e}")
+                if not task.future.done():
+                    task.future.set_exception(e)
+                raise
+            finally:
+                # Remove from active downloads
+                if task_id in self.active_downloads:
+                    del self.active_downloads[task_id]
+                self.queue_counter = max(0, self.queue_counter - 1)
+
+        # Start execution in background
+        asyncio.create_task(_execute_download())
+        
+        return task_id, task.future
     
     def shutdown(self):
         """Shutdown the thread pool executor"""

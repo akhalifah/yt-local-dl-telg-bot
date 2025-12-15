@@ -4,16 +4,18 @@ import time
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
+    ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes
 )
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import Config
 from utils import is_valid_youtube_url, download_video, get_video_info
-from download_manager import get_download_manager
-from download_manager import get_download_manager
+from download_manager import get_download_manager, CancelledError
 from telegram_downloader import download_telegram_video, get_video_info as get_telegram_video_info
 from auth_manager import AuthManager
 
@@ -54,13 +56,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         if not auth_manager.is_authorized(user_id):
             await update.message.reply_text(
-                f"{Config.BOT_START_MESSAGE}\n\n"
-                f"{Config.BOT_AUTH_REQUIRED_START}",
+                Config.BOT_AUTH_RESTRICTED,
                 parse_mode='Markdown'
             )
             return
 
     await update.message.reply_text(Config.BOT_START_MESSAGE)
+
+
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle download cancellation callback."""
+    query = update.callback_query
+    await query.answer()  # Acknowledge callback
+    
+    data = query.data
+    if not data.startswith("cancel_"):
+        return
+        
+    try:
+        task_id = int(data.split("_")[1])
+        if download_manager.cancel_task(task_id):
+            await query.edit_message_text(f"🛑 Cancelling download (Task {task_id})...")
+        else:
+            await query.edit_message_text("❌ Task not found or already completed.")
+    except Exception as e:
+        logger.error(f"Error processing cancel callback: {e}")
+        await query.edit_message_text("❌ Error processing cancellation.")
 
 
 async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -143,13 +164,22 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Progress tracking
         last_update_time = [0]  # Use list to allow modification in nested function
         progress_message_id = [None] # Store message ID for editing
+        task_id_container = [None] # Store task ID for cancel button
 
-        async def edit_progress_msg(chat_id, message_id, text):
+        async def edit_progress_msg(chat_id, message_id, text, task_id=None):
             try:
+                reply_markup = None
+                if task_id:
+                     reply_markup = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🛑 Cancel", callback_data=f"cancel_{task_id}")]
+                    ])
+                
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup,
                     disable_web_page_preview=True
                 )
             except Exception as e:
@@ -162,6 +192,12 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 return
             
             if d['status'] == 'downloading':
+                # Check for cancellation
+                if task_id_container[0]:
+                    task = download_manager.get_task(task_id_container[0])
+                    if task and task.cancelled:
+                        raise CancelledError("Download cancelled")
+                
                 current_time = time.time()
                 
                 # Throttle updates based on PROGRESS_UPDATE_INTERVAL
@@ -190,7 +226,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     
                     # Schedule async edit in the main loop
                     asyncio.run_coroutine_threadsafe(
-                        edit_progress_msg(chat_id, progress_message_id[0], progress_text),
+                        edit_progress_msg(chat_id, progress_message_id[0], progress_text, task_id_container[0]),
                         loop
                     )
         
@@ -207,30 +243,48 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Send download start notification (silent) with title
         status = download_manager.get_queue_status()
         start_msg = f"🎬 Starting download...\n{display_name}\n📊 Queue: {status['active'] + 1}/{status['max']} active"
-        start_msg_obj = await context.bot.send_message(
-            chat_id=chat_id,
-            text=start_msg,
-            disable_notification=True
-        )
-        progress_message_id[0] = start_msg_obj.message_id
         
         # Create async task for download and completion notification
         async def download_and_notify():
             try:
                 # Queue and execute download
-                await download_manager.download(
+                task_id, future = await download_manager.submit_download(
                     download_func=download_func,
                     task_type='youtube',
                     url=message_text,
                     user_id=user_id,
                     chat_id=chat_id
                 )
+                task_id_container[0] = task_id
+                
+                # Add cancel button
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛑 Cancel", callback_data=f"cancel_{task_id}")]
+                ])
+                
+                # Send start message with cancel button
+                start_msg_obj = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=start_msg,
+                    reply_markup=keyboard,
+                    disable_notification=True
+                )
+                progress_message_id[0] = start_msg_obj.message_id
+                
+                # Wait for download completion
+                await future
                 
                 # Send completion notification (silent) with title
                 complete_msg = f"✅ Download complete!\n{display_name}"
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=complete_msg,
+                    disable_notification=True
+                )
+            except CancelledError:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Download cancelled.\n{display_name}",
                     disable_notification=True
                 )
             except Exception as e:
@@ -292,33 +346,56 @@ async def handle_telegram_video(update: Update, context: ContextTypes.DEFAULT_TY
             finally:
                 loop.close()
         
-        # Send download start notification (silent) with video info
+        # Queue status
         status = download_manager.get_queue_status()
         video_size_mb = video.file_size / (1024 * 1024)
-        start_msg = f"🎬 Starting download...\n📹 Telegram video ({video_size_mb:.1f}MB, {video.duration}s)\n📊 Queue: {status['active'] + 1}/{status['max']} active"
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=start_msg,
-            disable_notification=True
-        )
+        start_msg = f"📥 Telegram video queued...\n📹 Size: {video_size_mb:.1f}MB\n📊 Queue: {status['active'] + 1}/{status['max']} active"
+        
+        # Progress tracking (for Telegram videos, mainly for cancel button)
+        progress_message_id = [None] # Store message ID for editing
+        task_id_container = [None] # Store task ID for cancel button
         
         # Create async task for download and completion notification
         async def download_and_notify():
             try:
                 # Queue and execute download
-                await download_manager.download(
+                task_id, future = await download_manager.submit_download(
                     download_func=download_func,
                     task_type='telegram',
                     url=video.file_id,
                     user_id=user_id,
                     chat_id=chat_id
                 )
+                task_id_container[0] = task_id
+                
+                # Add cancel button
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛑 Cancel", callback_data=f"cancel_{task_id}")]
+                ])
+                
+                # Send start message with cancel button
+                start_msg_obj = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=start_msg,
+                    reply_markup=keyboard,
+                    disable_notification=True
+                )
+                progress_message_id[0] = start_msg_obj.message_id
+                
+                # Wait for download completion
+                await future
                 
                 # Send completion notification (silent) with video info
                 complete_msg = f"✅ Download complete!\n📹 Telegram video ({video_size_mb:.1f}MB)"
                 await context.bot.send_message(
                     chat_id=chat_id,
                     text=complete_msg,
+                    disable_notification=True
+                )
+            except CancelledError:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"❌ Download cancelled.\n📹 Telegram video ({video_size_mb:.1f}MB)",
                     disable_notification=True
                 )
             except Exception as e:
@@ -385,6 +462,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("queue", queue_status))
     application.add_handler(CommandHandler("auth", auth_command))
+    application.add_handler(CallbackQueryHandler(cancel_callback))
     
     # Register message handlers
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
