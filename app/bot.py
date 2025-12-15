@@ -57,6 +57,9 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     
     try:
+        # Send initial processing message
+        processing_msg = await update.message.reply_text("🔎 Processing link...")
+
         # Get video/playlist info first (run in executor to avoid blocking)
         import asyncio
         loop = asyncio.get_event_loop()
@@ -113,6 +116,12 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         def download_func():
             download_video(message_text, progress_hook=progress_hook)
         
+        # Helper to delete processing message
+        try:
+            await processing_msg.delete()
+        except:
+            pass  # Ignore if already deleted or fails
+
         # Send download start notification (silent) with title
         status = download_manager.get_queue_status()
         start_msg = f"🎬 Starting download...\n{display_name}\n📊 Queue: {status['active'] + 1}/{status['max']} active"
