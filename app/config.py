@@ -44,6 +44,19 @@ class Config:
     BOT_DOWNLOAD_COMPLETE_MESSAGE: str = os.getenv("BOT_DOWNLOAD_COMPLETE_MESSAGE", "✅ Download complete!")
     BOT_TELEGRAM_VIDEO_TOO_LARGE: str = os.getenv("BOT_TELEGRAM_VIDEO_TOO_LARGE", "❌ Video is too large (max 20MB for Telegram videos)")
     
+    # Auth Messages
+    BOT_AUTH_RESTRICTED: str = os.getenv("BOT_AUTH_RESTRICTED", "⛔ Access restricted.\nPlease authenticate using: `/auth <password>`")
+    BOT_AUTH_REQUIRED_START: str = os.getenv("BOT_AUTH_REQUIRED_START", "🔒 **Authentication Required**\nThis bot is restricted to authorized users.\nPlease authenticate to use it: `/auth <password>`")
+    BOT_AUTH_NOT_ENABLED: str = os.getenv("BOT_AUTH_NOT_ENABLED", "🔓 Authentication is not enabled.")
+    BOT_AUTH_ALREADY_Authorized: str = os.getenv("BOT_AUTH_ALREADY_AUTHORIZED", "✅ You are already authorized.")
+    BOT_AUTH_USAGE: str = os.getenv("BOT_AUTH_USAGE", "Usage: `/auth <password>`")
+    BOT_AUTH_SUCCESS: str = os.getenv("BOT_AUTH_SUCCESS", "✅ Access granted! You can now use the bot.")
+    BOT_AUTH_FAILED: str = os.getenv("BOT_AUTH_FAILED", "❌ Invalid password.")
+    
+    # Access Control Configuration
+    BOT_ACCESS_PASSWORD: Optional[str] = os.getenv("BOT_ACCESS_PASSWORD")
+    ALLOWED_USERS_FILE: str = os.getenv("ALLOWED_USERS_FILE", "allowed_users.json")
+    
     # Logging Configuration
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_DIR: str = os.getenv("LOG_DIR", "./logs")

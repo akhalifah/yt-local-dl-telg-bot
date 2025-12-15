@@ -52,7 +52,11 @@ This bot provides a seamless interface for users to download content. Whether it
    DOWNLOAD_DIR=/app/downloads
    TEMP_DOWNLOAD_DIR=/app/temp_downloads
    MAX_CONCURRENT_DOWNLOADS=3
+   MAX_CONCURRENT_DOWNLOADS=3
    LOG_LEVEL=INFO
+   # Authentication (Optional)
+   BOT_ACCESS_PASSWORD=your_secret_password
+   ALLOWED_USERS_FILE=allowed_users.json
    ```
 
 3. **Run with Docker Compose:**
@@ -69,6 +73,22 @@ This bot provides a seamless interface for users to download content. Whether it
 
 1. **YouTube**: Simply paste a valid YouTube link (video or playlist) into the chat. The bot will automatically add it to the queue.
 2. **Telegram**: Forward or upload a video file to the chat. The bot will download it if `AUTO_DOWNLOAD_TELEGRAM_VIDEOS` is enabled.
+
+## 🔐 Authentication
+
+To restrict bot access to specific users, you can enable Pre-Shared Key (PSK) authentication.
+
+### How it Works
+1.  **Enable**: Set `BOT_ACCESS_PASSWORD` in your `.env` file.
+2.  **Authenticate**: Unknown users must send `/auth <your_password>` to the bot once.
+3.  **Persist**: The bot saves authorized user IDs to `allowed_users.json`. Authentication persists across restarts.
+
+If `BOT_ACCESS_PASSWORD` is not set, the bot is public and anyone can use it.
+
+### Commands
+- `/start`: Initialize the bot.
+- `/queue`: View status of current downloads.
+- `/auth <password>`: Authenticate with the bot (if enabled).
 
 ## 🏗 Full Design
 

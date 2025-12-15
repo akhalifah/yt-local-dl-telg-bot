@@ -11,6 +11,7 @@ services:
       - /data_hdd/media/movies:/app/downloads
       - ./temp_downloads:/app/temp_downloads
       - ./logs:/app/logs
+      - ./allowed_users.json:/config/allowed_users.json
     restart: unless-stopped
     networks:
       - bot-network

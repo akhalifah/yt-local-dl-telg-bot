@@ -13,7 +13,9 @@ from telegram.ext import (
 from config import Config
 from utils import is_valid_youtube_url, download_video, get_video_info
 from download_manager import get_download_manager
+from download_manager import get_download_manager
 from telegram_downloader import download_telegram_video, get_video_info as get_telegram_video_info
+from auth_manager import AuthManager
 
 # Setup logging
 # Setup logging
@@ -29,13 +31,63 @@ logger = logging.getLogger(__name__)
 
 # Initialize download manager
 download_manager = None
+auth_manager = None
+
+
+def check_auth(func):
+    """Decorator to check if user is authorized."""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        user_id = update.effective_user.id
+        if auth_manager.is_auth_enabled() and not auth_manager.is_authorized(user_id):
+            await update.message.reply_text(
+                Config.BOT_AUTH_RESTRICTED,
+                parse_mode='Markdown'
+            )
+            return
+        return await func(update, context, *args, **kwargs)
+    return wrapper
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a message when the command /start is issued."""
+    if auth_manager.is_auth_enabled():
+        user_id = update.effective_user.id
+        if not auth_manager.is_authorized(user_id):
+            await update.message.reply_text(
+                f"{Config.BOT_START_MESSAGE}\n\n"
+                f"{Config.BOT_AUTH_REQUIRED_START}",
+                parse_mode='Markdown'
+            )
+            return
+
     await update.message.reply_text(Config.BOT_START_MESSAGE)
 
 
+async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle authentication command."""
+    if not auth_manager.is_auth_enabled():
+        await update.message.reply_text(Config.BOT_AUTH_NOT_ENABLED)
+        return
+
+    user_id = update.effective_user.id
+    if auth_manager.is_authorized(user_id):
+        await update.message.reply_text(Config.BOT_AUTH_ALREADY_Authorized)
+        return
+
+    if not context.args:
+        await update.message.reply_text(Config.BOT_AUTH_USAGE, parse_mode='Markdown')
+        return
+
+    password = context.args[0]
+    if auth_manager.authorize(user_id, password):
+        await update.message.reply_text(Config.BOT_AUTH_SUCCESS)
+        logger.info(f"User {user_id} authorized via command.")
+    else:
+        await update.message.reply_text(Config.BOT_AUTH_FAILED)
+        logger.warning(f"Failed auth attempt by {user_id}")
+
+
+@check_auth
 async def queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current download queue status."""
     status = download_manager.get_queue_status()
@@ -50,6 +102,7 @@ async def queue_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 
+@check_auth
 async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle YouTube link downloads with concurrent support."""
     message_text = update.message.text
@@ -166,6 +219,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(Config.BOT_ERROR_MESSAGE)
 
 
+@check_auth
 async def handle_telegram_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle Telegram video downloads with concurrent support."""
     if not Config.AUTO_DOWNLOAD_TELEGRAM_VIDEOS:
@@ -256,6 +310,7 @@ async def handle_telegram_video(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(Config.BOT_ERROR_MESSAGE)
 
 
+@check_auth
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle incoming text messages (YouTube links)."""
     message_text = update.message.text
@@ -286,11 +341,20 @@ def main():
     download_manager = get_download_manager(max_concurrent=Config.MAX_CONCURRENT_DOWNLOADS)
     logger.info(f"Download manager initialized with max_concurrent={Config.MAX_CONCURRENT_DOWNLOADS}")
     
+    # Initialize auth manager
+    global auth_manager
+    auth_manager = AuthManager()
+    if auth_manager.is_auth_enabled():
+        logger.info("Authentication enabled.")
+    else:
+        logger.info("Authentication disabled (no password set).")
+    
     application = ApplicationBuilder().token(Config.BOT_TOKEN).build()
 
     # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("queue", queue_status))
+    application.add_handler(CommandHandler("auth", auth_command))
     
     # Register message handlers
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
