@@ -142,6 +142,19 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Progress tracking
         last_update_time = [0]  # Use list to allow modification in nested function
+        progress_message_id = [None] # Store message ID for editing
+
+        async def edit_progress_msg(chat_id, message_id, text):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=text,
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                # Changes to message content are often ignored if content hasn't changed
+                pass
         
         def progress_hook(d):
             """Progress hook for yt-dlp - logs progress to console"""
@@ -162,8 +175,24 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                 speed = d.get('_speed_str', 'N/A').strip()
                 eta = d.get('_eta_str', 'N/A').strip()
                 
-                # Log progress (can't send Telegram messages from thread context)
-                logger.info(f"Download progress for user {user_id}: {percent} | Speed: {speed} | ETA: {eta}")
+                # Log progress
+                logger.debug(f"Download progress for user {user_id}: {percent} | Speed: {speed} | ETA: {eta}")
+                
+                # Send progress to user if message ID is available
+                if progress_message_id[0] and Config.ENABLE_PROGRESS_NOTIFICATIONS:
+                    progress_text = (
+                        f"📥 **Downloading...**\n"
+                        f"{display_name}\n\n"
+                        f"📊 Progress: {percent}\n"
+                        f"🚀 Speed: {speed}\n"
+                        f"⏳ ETA: {eta}"
+                    )
+                    
+                    # Schedule async edit in the main loop
+                    asyncio.run_coroutine_threadsafe(
+                        edit_progress_msg(chat_id, progress_message_id[0], progress_text),
+                        loop
+                    )
         
         # Create download function wrapper
         def download_func():
@@ -178,11 +207,12 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Send download start notification (silent) with title
         status = download_manager.get_queue_status()
         start_msg = f"🎬 Starting download...\n{display_name}\n📊 Queue: {status['active'] + 1}/{status['max']} active"
-        await context.bot.send_message(
+        start_msg_obj = await context.bot.send_message(
             chat_id=chat_id,
             text=start_msg,
             disable_notification=True
         )
+        progress_message_id[0] = start_msg_obj.message_id
         
         # Create async task for download and completion notification
         async def download_and_notify():
