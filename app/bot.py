@@ -1,7 +1,8 @@
 import os
 import logging
 import time
-from telegram import Update
+import asyncio
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     ApplicationBuilder,
@@ -135,8 +136,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         processing_msg = await update.message.reply_text("🔎 Processing link...")
 
         # Get video/playlist info first (run in executor to avoid blocking)
-        import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         video_info = await loop.run_in_executor(None, get_video_info, message_text)
         
         # Create display name
@@ -167,6 +167,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         task_id_container = [None] # Store task ID for cancel button
 
         async def edit_progress_msg(chat_id, message_id, text, task_id=None):
+            logger.debug(f"edit_progress_msg called for task {task_id}, message {message_id}")
             try:
                 reply_markup = None
                 if task_id:
@@ -183,13 +184,15 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     disable_web_page_preview=True
                 )
             except Exception as e:
-                # Changes to message content are often ignored if content hasn't changed
+                logger.error(f"Error editing progress message for task {task_id}: {e}")
                 pass
         
         def progress_hook(d):
             """Progress hook for yt-dlp - logs progress to console"""
             if not Config.ENABLE_PROGRESS_NOTIFICATIONS:
                 return
+            
+            logger.debug(f"Progress hook called for user {user_id}, task {task_id_container[0]}, status: {d.get('status')}")
             
             if d['status'] == 'downloading':
                 # Check for cancellation
@@ -270,6 +273,7 @@ async def handle_youtube_link(update: Update, context: ContextTypes.DEFAULT_TYPE
                     disable_notification=True
                 )
                 progress_message_id[0] = start_msg_obj.message_id
+                logger.info(f"Set progress_message_id={progress_message_id[0]} for YouTube task {task_id}")
                 
                 # Wait for download completion
                 await future
@@ -339,12 +343,17 @@ async def handle_telegram_video(update: Update, context: ContextTypes.DEFAULT_TY
         def download_func():
             # Run async function in sync context
             import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
             try:
                 loop.run_until_complete(download_func_async())
             finally:
-                loop.close()
+                if not loop.is_running():
+                    loop.close()
         
         # Queue status
         status = download_manager.get_queue_status()
@@ -381,6 +390,7 @@ async def handle_telegram_video(update: Update, context: ContextTypes.DEFAULT_TY
                     disable_notification=True
                 )
                 progress_message_id[0] = start_msg_obj.message_id
+                logger.info(f"Set progress_message_id={progress_message_id[0]} for Telegram task {task_id}")
                 
                 # Wait for download completion
                 await future
